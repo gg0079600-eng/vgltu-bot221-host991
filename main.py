@@ -7,6 +7,7 @@ Telegram-бот расписания ВГЛТУ.
   2. Кнопки: «Сегодня», «Завтра», «Неделя».
   3. Настройки: смена группы, включение/выключение авторассылки.
   4. Поиск расписания любой группы по названию.
+  5. Опрос подгруппы при первом входе (1 / 2 / все) и фильтрация пар.
 
 Команды:
   /start     — показать меню и справку
@@ -17,9 +18,9 @@ Telegram-бот расписания ВГЛТУ.
   /settings  — настройки
   /help      — справка
 
-Запуск:  python vgltu_bot.py
-Тест:    python vgltu_bot.py --test    (расписание группы GROUP на сегодня)
-Разово:  python vgltu_bot.py --once    (отправить сегодняшнее расписание и выйти)
+Запуск:  python main.py
+Тест:    python main.py --test    (расписание группы GROUP на сегодня)
+Разово:  python main.py --once    (отправить сегодняшнее расписание и выйти)
 """
 
 import json
@@ -281,48 +282,72 @@ def _join_header(weekday, date_text):
     return (weekday.capitalize() or date_text or "Расписание")
 
 
-def format_day(day, html=False):
+def _subgroup_num(lesson):
+    """Номер подгруппы занятия (1/2) или None, если занятие общее для всех."""
+    m = re.match(r"^(\d+)", (lesson.get("subgroup") or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def filter_lessons(lessons, subgroup=0):
+    """Оставляет общие занятия + занятия выбранной подгруппы."""
+    if not subgroup:
+        return list(lessons)
+    out = []
+    for L in lessons:
+        n = _subgroup_num(L)
+        if n is None or n == subgroup:
+            out.append(L)
+    return out
+
+
+def subgroup_label(subgroup):
+    return ("подгруппа " + str(subgroup)) if subgroup else "все подгруппы"
+
+
+def format_day(day, html=False, subgroup=0):
     weekday = (day.get("weekday") or "").strip()
     date_text = (day.get("date_text") or "").strip()
     header = _join_header(weekday, date_text)
     group_name = GROUP
+    lessons = filter_lessons(day.get("lessons") or [], subgroup)
 
-    if not day.get("lessons"):
+    if not lessons:
         if html:
+            sub = ("  ·  <i>" + esc(subgroup_label(subgroup)) + "</i>") if subgroup else ""
             return ("📅 <b>" + esc(header) + "</b>\n"
-                    "👥 <i>" + esc(group_name) + "</i>\n"
+                    "👥 <i>" + esc(group_name) + "</i>" + sub + "\n"
                     "━━━━━━━━━━━━━━━━━━\n\n"
                     "😴 <b>Пар нет — можно отдыхать!</b>")
         return "📚 " + header + "\n\n😴 Пар нет — можно отдыхать!"
 
     if html:
+        sub = ("  ·  <i>" + esc(subgroup_label(subgroup)) + "</i>") if subgroup else ""
         out = [
             "📅 <b>" + esc(header) + "</b>",
-            "👥 <i>" + esc(group_name) + "</i>",
+            "👥 <i>" + esc(group_name) + "</i>" + sub,
             "━━━━━━━━━━━━━━━━━━",
         ]
-        for L in day["lessons"]:
+        for L in lessons:
             if not L.get("subject"):
                 continue
             emoji, label, subject = _lesson_type(L["subject"])
             out.append("")
             out.append("🕘 <code>" + esc(L.get("time") or "—") + "</code>")
-            line = emoji + " <b>" + esc(subject) + "</b>"
-            if L.get("subgroup"):
-                line += "  <i>(" + esc(L["subgroup"]) + ")</i>"
-            out.append(line)
+            inner = [emoji + " <b>" + esc(subject) + "</b>"]
+            if L.get("subgroup") and not subgroup:
+                inner[0] += "  <i>(" + esc(L["subgroup"]) + ")</i>"
             details = []
             if L.get("auditory"):
                 details.append("🚪 " + esc(L["auditory"]))
             if L.get("teacher"):
                 details.append("👤 " + esc(L["teacher"]))
             if details:
-                out.append("   " + "  ·  ".join(details))
+                inner.append("  ·  ".join(details))
+            out.append("<blockquote>" + "\n".join(inner) + "</blockquote>")
         return "\n".join(out)
 
-    # обычный текст (для консоли / --test)
     lines = ["📚 " + header, ""]
-    for L in day["lessons"]:
+    for L in lessons:
         if not L.get("subject"):
             continue
         s = "🕘 " + (L.get("time") or "—") + "\n• " + L["subject"]
@@ -339,15 +364,16 @@ def format_day(day, html=False):
     return "\n".join(lines)
 
 
-def format_week(days, html=False):
+def format_week(days, html=False, subgroup=0):
     """Компактное расписание на несколько дней."""
     blocks = []
     for d in days:
         weekday = (d.get("weekday") or "").strip()
         date_text = (d.get("date_text") or "").strip()
         header = _join_header(weekday, date_text)
+        lessons = filter_lessons(d.get("lessons") or [], subgroup)
 
-        if not d.get("lessons"):
+        if not lessons:
             if html:
                 blocks.append("📅 <b>" + esc(header) + "</b>\n😴 Пар нет")
             else:
@@ -356,12 +382,12 @@ def format_week(days, html=False):
 
         if html:
             blk = ["📅 <b>" + esc(header) + "</b>"]
-            for L in d["lessons"]:
+            for L in lessons:
                 if not L.get("subject"):
                     continue
                 emoji, label, subject = _lesson_type(L["subject"])
-                s = "🕘 <code>" + esc(L.get("time") or "—") + "</code> " + emoji + " " + esc(subject)
-                if L.get("subgroup"):
+                s = "🕘 <code>" + esc(L.get("time") or "—") + "</code>  " + emoji + " " + esc(subject)
+                if L.get("subgroup") and not subgroup:
                     s += " <i>(" + esc(L["subgroup"]) + ")</i>"
                 blk.append(s)
                 det = []
@@ -370,11 +396,11 @@ def format_week(days, html=False):
                 if L.get("teacher"):
                     det.append("👤 " + esc(L["teacher"]))
                 if det:
-                    blk.append("    " + "  ·  ".join(det))
+                    blk.append("\u00a0\u00a0\u00a0\u00a0" + "  ·  ".join(det))
             blocks.append("\n".join(blk))
         else:
             blk = ["📚 " + header]
-            for L in d["lessons"]:
+            for L in lessons:
                 if not L.get("subject"):
                     continue
                 s = (L.get("time") or "—") + " · " + L["subject"]
@@ -454,7 +480,7 @@ def ensure_user(chat_id):
     s = load_settings()
     key = str(chat_id)
     if key not in s:
-        s[key] = {"group": GROUP, "auto_send": True}
+        s[key] = {"group": GROUP, "auto_send": True, "subgroup": 0, "subgroup_chosen": False}
         save_settings(s)
     return s[key]
 
@@ -462,14 +488,28 @@ def ensure_user(chat_id):
 def get_user_settings(chat_id):
     s = load_settings()
     key = str(chat_id)
-    return s.get(key, {"group": GROUP, "auto_send": True})
+    return s.get(key, {"group": GROUP, "auto_send": True, "subgroup": 0, "subgroup_chosen": False})
+
+
+def is_subgroup_chosen(chat_id):
+    return bool(get_user_settings(chat_id).get("subgroup_chosen"))
 
 
 def set_user_group(chat_id, group):
     s = load_settings()
     key = str(chat_id)
-    entry = s.get(key, {"group": GROUP, "auto_send": True})
+    entry = s.get(key, {"group": GROUP, "auto_send": True, "subgroup": 0, "subgroup_chosen": False})
     entry["group"] = group
+    s[key] = entry
+    save_settings(s)
+
+
+def set_user_subgroup(chat_id, subgroup):
+    s = load_settings()
+    key = str(chat_id)
+    entry = s.get(key, {"group": GROUP, "auto_send": True, "subgroup": 0, "subgroup_chosen": False})
+    entry["subgroup"] = int(subgroup)
+    entry["subgroup_chosen"] = True
     s[key] = entry
     save_settings(s)
 
@@ -477,7 +517,7 @@ def set_user_group(chat_id, group):
 def set_user_auto_send(chat_id, value):
     s = load_settings()
     key = str(chat_id)
-    entry = s.get(key, {"group": GROUP, "auto_send": True})
+    entry = s.get(key, {"group": GROUP, "auto_send": True, "subgroup": 0, "subgroup_chosen": False})
     entry["auto_send"] = bool(value)
     s[key] = entry
     save_settings(s)
@@ -543,11 +583,31 @@ def main_keyboard():
 def settings_keyboard(chat_id):
     us = get_user_settings(chat_id)
     auto_label = "🔔 Авторассылка: ВКЛ" if us.get("auto_send", True) else "🔔 Авторассылка: ВЫКЛ"
+    sg = us.get("subgroup", 0)
+    sg_label = "👥 Подгруппа: " + (str(sg) if sg else "все")
     return {"inline_keyboard": [
-        [{"text": "👥 Сменить группу", "callback_data": "change_group"}],
+        [{"text": "📚 Сменить группу", "callback_data": "change_group"}],
+        [{"text": sg_label, "callback_data": "change_subgroup"}],
         [{"text": auto_label, "callback_data": "toggle_auto"}],
         [{"text": "⬅️ Назад", "callback_data": "back"}],
     ]}
+
+
+def subgroup_keyboard(chat_id):
+    """Кнопки выбора подгруппы."""
+    us = get_user_settings(chat_id)
+    cur = us.get("subgroup", 0)
+    chosen = bool(us.get("subgroup_chosen"))
+    def mark(n, label):
+        return ("✅ " if chosen and cur == n else "") + label
+    rows = [
+        [{"text": mark(1, "1 подгруппа"), "callback_data": "set_subgroup:1"},
+         {"text": mark(2, "2 подгруппа"), "callback_data": "set_subgroup:2"}],
+        [{"text": mark(0, "Показывать все"), "callback_data": "set_subgroup:0"}],
+    ]
+    if chosen:
+        rows.append([{"text": "⬅️ Назад", "callback_data": "settings"}])
+    return {"inline_keyboard": rows}
 
 
 def group_pick_keyboard(groups, prefix="pick_group"):
@@ -562,14 +622,29 @@ HELP_TEXT = (
     "🤖 Бот расписания ВГЛТУ\n\n"
     "Кнопки:\n"
     "📅 Сегодня / 📅 Завтра / 📅 Неделя — расписание\n"
-    "⚙️ Настройки — сменить группу или отключить авторассылку\n\n"
+    "⚙️ Настройки — группа, подгруппа и авторассылка\n\n"
     "Команды: /now, /tomorrow, /week, /find <группа>, /settings, /help\n\n"
-    "Авторассылка — каждый день в %02d:%02d (МСК)."
+    "Можно указать свою подгруппу (1 или 2) — тогда в расписании будут\n"
+    "только ваши пары. Авторассылка — каждый день в %02d:%02d (МСК)."
 ) % (SEND_HOUR, SEND_MINUTE)
 
 
 # Состояние «ожидаем ввод группы» (для кнопки «Сменить группу»).
 awaiting_group = {}
+
+# Пользователи, которым подгруппа ещё не выбрана (первый вход / опрос).
+onboarding_subgroup = set()
+
+
+def ask_subgroup(chat_id):
+    """Приветственный опрос: в какой подгруппе учится пользователь."""
+    onboarding_subgroup.add(chat_id)
+    send_message(
+        chat_id,
+        "👋 Привет! Я бот расписания ВГЛТУ.\n\n"
+        "Чтобы присылать только твои пары, укажи, в какой ты подгруппе:",
+        subgroup_keyboard(chat_id),
+    )
 
 
 def show_menu(chat_id, text="Выберите действие:"):
@@ -579,25 +654,32 @@ def show_menu(chat_id, text="Выберите действие:"):
 def show_settings(chat_id):
     us = get_user_settings(chat_id)
     auto = "включена ✅" if us.get("auto_send", True) else "выключена ❌"
+    sg = us.get("subgroup", 0)
+    sg_text = ("подгруппа " + str(sg)) if sg else "все подгруппы"
     text = ("⚙️ Настройки\n\n"
-            "Группа: " + us.get("group", GROUP) + "\n"
-            "Авторассылка: " + auto)
+            "📚 Группа: " + us.get("group", GROUP) + "\n"
+            "👥 Подгруппа: " + sg_text + "\n"
+            "🔔 Авторассылка: " + auto)
     send_message(chat_id, text, settings_keyboard(chat_id))
 
 
 def send_day(chat_id, date_obj, group=None):
-    group = group or get_user_settings(chat_id).get("group", GROUP)
+    us = get_user_settings(chat_id)
+    group = group or us.get("group", GROUP)
+    subgroup = us.get("subgroup", 0)
     day = fetch_day_schedule(date_obj, group)
-    send_long(chat_id, format_day(day, html=True) if day else "Не удалось получить расписание.", main_keyboard(), parse_mode="HTML")
+    send_long(chat_id, format_day(day, html=True, subgroup=subgroup) if day else "Не удалось получить расписание.", main_keyboard(), parse_mode="HTML")
 
 
 def send_week(chat_id, group=None):
-    group = group or get_user_settings(chat_id).get("group", GROUP)
+    us = get_user_settings(chat_id)
+    group = group or us.get("group", GROUP)
+    subgroup = us.get("subgroup", 0)
     days = fetch_days(group, now_msk().date())[:7]
     if not days:
         send_message(chat_id, "Не удалось получить расписание.", main_keyboard())
         return
-    send_long(chat_id, format_week(days, html=True), main_keyboard(), parse_mode="HTML")
+    send_long(chat_id, format_week(days, html=True, subgroup=subgroup), main_keyboard(), parse_mode="HTML")
 
 
 # ------------------------- ОБРАБОТКА СОБЫТИЙ -------------------------
@@ -610,6 +692,11 @@ def handle_callback(cb):
         return
 
     ensure_user(chat_id)
+
+    # если подгруппа ещё не выбрана — сначала показываем опрос
+    if not is_subgroup_chosen(chat_id) and not (data or "").startswith("set_subgroup:"):
+        ask_subgroup(chat_id)
+        return
 
     if data == "today":
         send_day(chat_id, now_msk().date())
@@ -624,6 +711,18 @@ def handle_callback(cb):
     elif data == "change_group":
         awaiting_group[chat_id] = True
         send_message(chat_id, "Введи номер группы (например: ИС2-253-ОБ):")
+    elif data == "change_subgroup":
+        send_message(chat_id, "Выбери свою подгруппу:", subgroup_keyboard(chat_id))
+    elif data.startswith("set_subgroup:"):
+        n = int(data[len("set_subgroup:"):])
+        was_chosen = is_subgroup_chosen(chat_id)
+        set_user_subgroup(chat_id, n)
+        if not was_chosen:
+            onboarding_subgroup.discard(chat_id)
+            show_menu(chat_id, "✅ Отлично! Твоя подгруппа: " + subgroup_label(n) +
+                      "\n\nТеперь буду присылать только твои пары.\n\n" + HELP_TEXT)
+        else:
+            show_settings(chat_id)
     elif data == "toggle_auto":
         us = get_user_settings(chat_id)
         set_user_auto_send(chat_id, not us.get("auto_send", True))
@@ -631,7 +730,7 @@ def handle_callback(cb):
     elif data.startswith("pick_group:"):
         group = data[len("pick_group:"):]
         set_user_group(chat_id, group)
-        send_message(chat_id, "✅ Группа изменена на " + group, settings_keyboard(chat_id))
+        send_message(chat_id, "✅ Группа изменена на " + group + "\n\nТеперь выбери подгруппу:", subgroup_keyboard(chat_id))
 
 
 def handle_update(upd):
@@ -649,6 +748,11 @@ def handle_update(upd):
         return
 
     ensure_user(chat_id)
+
+    # если подгруппа ещё не выбрана — сначала опрос (одно нажатие кнопки)
+    if not is_subgroup_chosen(chat_id):
+        ask_subgroup(chat_id)
+        return
 
     if text == "/start":
         show_menu(chat_id, "Привет! Твой chat_id: " + str(chat_id) + "\n\n" + HELP_TEXT)
@@ -681,7 +785,7 @@ def change_group(chat_id, query):
     if exact or (len(matches) == 1):
         group = exact or matches[0]
         set_user_group(chat_id, group)
-        send_message(chat_id, "✅ Группа изменена на " + group, settings_keyboard(chat_id))
+        send_message(chat_id, "✅ Группа изменена на " + group + "\n\nТеперь выбери подгруппу:", subgroup_keyboard(chat_id))
     elif len(matches) > 1:
         send_message(
             chat_id,
@@ -697,8 +801,9 @@ def search_and_reply(chat_id, query):
     try:
         if exact or (len(matches) == 1):
             group = exact or matches[0]
+            subgroup = get_user_settings(chat_id).get("subgroup", 0)
             day = fetch_day_schedule(now_msk().date(), group)
-            send_long(chat_id, format_day(day, html=True) if day else "Не удалось получить расписание для группы " + group, main_keyboard(), parse_mode="HTML")
+            send_long(chat_id, format_day(day, html=True, subgroup=subgroup) if day else "Не удалось получить расписание для группы " + group, main_keyboard(), parse_mode="HTML")
         elif len(matches) > 1:
             top = "\n".join("• " + g for g in matches[:15])
             send_message(chat_id, "Найдено несколько групп:\n" + top + "\n\nУточни номер (например: " + matches[0] + ")")
@@ -724,7 +829,7 @@ def scheduler_loop():
                     if entry.get("auto_send", True):
                         try:
                             day = fetch_day_schedule(now.date(), entry.get("group", GROUP))
-                            send_message(int(key), format_day(day, html=True) if day else "Не удалось получить расписание.", parse_mode="HTML")
+                            send_message(int(key), format_day(day, html=True, subgroup=entry.get("subgroup", 0)) if day else "Не удалось получить расписание.", parse_mode="HTML")
                             print("[bot] расписание отправлено", key, now.strftime("%Y-%m-%d %H:%M"))
                         except Exception as e:
                             print("[bot] ошибка отправки", key, ":", e)
@@ -742,10 +847,11 @@ def send_today_once():
         sys.exit(1)
     chat_id = CHAT_ID or load_chat_id()
     if not chat_id:
-        print("[bot] ОШИБКА: chat_id не задан. Укажите CHAT_ID в vgltu_bot.py.")
+        print("[bot] ОШИБКА: chat_id не задан. Укажите CHAT_ID в main.py.")
         sys.exit(1)
+    subgroup = get_user_settings(chat_id).get("subgroup", 0)
     day = fetch_day_schedule(now_msk().date(), GROUP)
-    text = format_day(day, html=True) if day else "Не удалось получить расписание."
+    text = format_day(day, html=True, subgroup=subgroup) if day else "Не удалось получить расписание."
     send_message(chat_id, text, parse_mode="HTML")
     print("[bot] расписание отправлено (--once) на chat_id", chat_id)
 
