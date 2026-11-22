@@ -8,19 +8,6 @@ Telegram-бот расписания ВГЛТУ.
   3. Настройки: смена группы, включение/выключение авторассылки.
   4. Поиск расписания любой группы по названию.
   5. Опрос подгруппы при первом входе (1 / 2 / все) и фильтрация пар.
-
-Команды:
-  /start     — показать меню и справку
-  /now       — расписание на сегодня
-  /tomorrow  — расписание на завтра
-  /week      — расписание на неделю
-  /find <N>  — найти группу N (например /find ИС2-253-ОБ)
-  /settings  — настройки
-  /help      — справка
-
-Запуск:  python main.py
-Тест:    python main.py --test    (расписание группы GROUP на сегодня)
-Разово:  python main.py --once    (отправить сегодняшнее расписание и выйти)
 """
 
 import json
@@ -304,11 +291,11 @@ def subgroup_label(subgroup):
     return ("подгруппа " + str(subgroup)) if subgroup else "все подгруппы"
 
 
-def format_day(day, html=False, subgroup=0):
+def format_day(day, html=False, subgroup=0, group_name=None):
     weekday = (day.get("weekday") or "").strip()
     date_text = (day.get("date_text") or "").strip()
     header = _join_header(weekday, date_text)
-    group_name = GROUP
+    group_name = group_name or GROUP
     lessons = filter_lessons(day.get("lessons") or [], subgroup)
 
     if not lessons:
@@ -346,6 +333,7 @@ def format_day(day, html=False, subgroup=0):
             out.append("<blockquote>" + "\n".join(inner) + "</blockquote>")
         return "\n".join(out)
 
+    # обычный текст (для консоли / --test)
     lines = ["📚 " + header, ""]
     for L in lessons:
         if not L.get("subject"):
@@ -364,59 +352,9 @@ def format_day(day, html=False, subgroup=0):
     return "\n".join(lines)
 
 
-def format_week(days, html=False, subgroup=0):
-    """Компактное расписание на несколько дней."""
-    blocks = []
-    for d in days:
-        weekday = (d.get("weekday") or "").strip()
-        date_text = (d.get("date_text") or "").strip()
-        header = _join_header(weekday, date_text)
-        lessons = filter_lessons(d.get("lessons") or [], subgroup)
-
-        if not lessons:
-            if html:
-                blocks.append("📅 <b>" + esc(header) + "</b>\n😴 Пар нет")
-            else:
-                blocks.append("📚 " + header + "\n😴 Пар нет")
-            continue
-
-        if html:
-            blk = ["📅 <b>" + esc(header) + "</b>"]
-            for L in lessons:
-                if not L.get("subject"):
-                    continue
-                emoji, label, subject = _lesson_type(L["subject"])
-                s = "🕘 <code>" + esc(L.get("time") or "—") + "</code>  " + emoji + " " + esc(subject)
-                if L.get("subgroup") and not subgroup:
-                    s += " <i>(" + esc(L["subgroup"]) + ")</i>"
-                blk.append(s)
-                det = []
-                if L.get("auditory"):
-                    det.append("🚪 " + esc(L["auditory"]))
-                if L.get("teacher"):
-                    det.append("👤 " + esc(L["teacher"]))
-                if det:
-                    blk.append("\u00a0\u00a0\u00a0\u00a0" + "  ·  ".join(det))
-            blocks.append("\n".join(blk))
-        else:
-            blk = ["📚 " + header]
-            for L in lessons:
-                if not L.get("subject"):
-                    continue
-                s = (L.get("time") or "—") + " · " + L["subject"]
-                if L.get("subgroup"):
-                    s += " (" + L["subgroup"] + ")"
-                detail = []
-                if L.get("auditory"):
-                    detail.append(L["auditory"])
-                if L.get("teacher"):
-                    detail.append(L["teacher"])
-                if detail:
-                    s += " — " + ", ".join(detail)
-                blk.append("• " + s)
-            blocks.append("\n".join(blk))
-    sep = "\n\n━━━━━━━━━━━━━━━━━━\n\n" if html else "\n\n"
-    return sep.join(blocks)
+def format_week(days, html=False, subgroup=0, group_name=None):
+    """Расписание на неделю — список блоков, по одному на день (как «Сегодня»)."""
+    return [format_day(d, html=html, subgroup=subgroup, group_name=group_name) for d in days]
 
 
 def split_text(text, limit=4000):
@@ -612,7 +550,6 @@ def subgroup_keyboard(chat_id):
 
 def group_pick_keyboard(groups, prefix="pick_group"):
     """Список групп в виде кнопок (для выбора по нажатию)."""
-    # максимум 30 кнопок, чтобы не упереться в лимиты Telegram
     return {"inline_keyboard": [
         [{"text": g, "callback_data": prefix + ":" + g}] for g in groups[:30]
     ]}
@@ -668,7 +605,7 @@ def send_day(chat_id, date_obj, group=None):
     group = group or us.get("group", GROUP)
     subgroup = us.get("subgroup", 0)
     day = fetch_day_schedule(date_obj, group)
-    send_long(chat_id, format_day(day, html=True, subgroup=subgroup) if day else "Не удалось получить расписание.", main_keyboard(), parse_mode="HTML")
+    send_long(chat_id, format_day(day, html=True, subgroup=subgroup, group_name=group) if day else "Не удалось получить расписание.", main_keyboard(), parse_mode="HTML")
 
 
 def send_week(chat_id, group=None):
@@ -679,7 +616,11 @@ def send_week(chat_id, group=None):
     if not days:
         send_message(chat_id, "Не удалось получить расписание.", main_keyboard())
         return
-    send_long(chat_id, format_week(days, html=True, subgroup=subgroup), main_keyboard(), parse_mode="HTML")
+    blocks = format_week(days, html=True, subgroup=subgroup, group_name=group)
+    # каждый день отправляем отдельным сообщением (как «Сегодня») — так нет
+    # переполнения лимита сущностей Telegram и всё выглядит одинаково
+    for i, text in enumerate(blocks):
+        send_long(chat_id, text, main_keyboard() if i == len(blocks) - 1 else None, parse_mode="HTML")
 
 
 # ------------------------- ОБРАБОТКА СОБЫТИЙ -------------------------
@@ -803,7 +744,7 @@ def search_and_reply(chat_id, query):
             group = exact or matches[0]
             subgroup = get_user_settings(chat_id).get("subgroup", 0)
             day = fetch_day_schedule(now_msk().date(), group)
-            send_long(chat_id, format_day(day, html=True, subgroup=subgroup) if day else "Не удалось получить расписание для группы " + group, main_keyboard(), parse_mode="HTML")
+            send_long(chat_id, format_day(day, html=True, subgroup=subgroup, group_name=group) if day else "Не удалось получить расписание для группы " + group, main_keyboard(), parse_mode="HTML")
         elif len(matches) > 1:
             top = "\n".join("• " + g for g in matches[:15])
             send_message(chat_id, "Найдено несколько групп:\n" + top + "\n\nУточни номер (например: " + matches[0] + ")")
@@ -829,7 +770,7 @@ def scheduler_loop():
                     if entry.get("auto_send", True):
                         try:
                             day = fetch_day_schedule(now.date(), entry.get("group", GROUP))
-                            send_message(int(key), format_day(day, html=True, subgroup=entry.get("subgroup", 0)) if day else "Не удалось получить расписание.", parse_mode="HTML")
+                            send_message(int(key), format_day(day, html=True, subgroup=entry.get("subgroup", 0), group_name=entry.get("group", GROUP)) if day else "Не удалось получить расписание.", parse_mode="HTML")
                             print("[bot] расписание отправлено", key, now.strftime("%Y-%m-%d %H:%M"))
                         except Exception as e:
                             print("[bot] ошибка отправки", key, ":", e)
@@ -851,7 +792,7 @@ def send_today_once():
         sys.exit(1)
     subgroup = get_user_settings(chat_id).get("subgroup", 0)
     day = fetch_day_schedule(now_msk().date(), GROUP)
-    text = format_day(day, html=True, subgroup=subgroup) if day else "Не удалось получить расписание."
+    text = format_day(day, html=True, subgroup=subgroup, group_name=GROUP) if day else "Не удалось получить расписание."
     send_message(chat_id, text, parse_mode="HTML")
     print("[bot] расписание отправлено (--once) на chat_id", chat_id)
 
