@@ -31,6 +31,7 @@ import threading
 import urllib.request
 import urllib.parse
 import datetime
+import html as _html
 import socket as _socket
 
 # На некоторых серверах IPv6-маршрут до api.telegram.org не работает,
@@ -233,16 +234,83 @@ def fetch_day_schedule(date_obj, group=GROUP):
     return days[0]
 
 
-def format_day(day):
+def esc(s):
+    """Экранирует текст для HTML-разметки Telegram."""
+    return _html.escape(str(s if s is not None else ""), quote=False)
+
+
+_PREFIX_RE = re.compile(r"^(лаб|лек|пр|семинар|зач[её]т|экзамен)\.?\s+", re.IGNORECASE)
+_TYPE_MAP = {
+    "лаб": ("🧪", "Лабораторная"),
+    "лек": ("📖", "Лекция"),
+    "пр": ("✏️", "Практика"),
+    "семинар": ("🗣", "Семинар"),
+    "зачёт": ("📝", "Зачёт"),
+    "зачет": ("📝", "Зачёт"),
+    "экзамен": ("🎓", "Экзамен"),
+}
+
+
+def _lesson_type(subject):
+    """Возвращает (эмодзи, тип, чистое название) по префиксу дисциплины."""
+    s = (subject or "").strip()
+    m = _PREFIX_RE.match(s)
+    if m:
+        p = m.group(1).lower()
+        rest = s[m.end():].strip() or s
+        emoji, label = _TYPE_MAP.get(p, ("📚", "Занятие"))
+        return emoji, label, rest
+    return "📚", "Занятие", s
+
+
+def _join_header(weekday, date_text):
+    weekday = (weekday or "").strip()
+    date_text = (date_text or "").strip()
+    if weekday and date_text:
+        return weekday.capitalize() + ", " + date_text
+    return (weekday.capitalize() or date_text or "Расписание")
+
+
+def format_day(day, html=False):
     weekday = (day.get("weekday") or "").strip()
     date_text = (day.get("date_text") or "").strip()
-    header = " ".join(x for x in [weekday.capitalize(), date_text] if x).strip()
-    if not header:
-        header = "Расписание"
+    header = _join_header(weekday, date_text)
+    group_name = GROUP
 
     if not day.get("lessons"):
+        if html:
+            return ("📅 <b>" + esc(header) + "</b>\n"
+                    "👥 <i>" + esc(group_name) + "</i>\n"
+                    "━━━━━━━━━━━━━━━━━━\n\n"
+                    "😴 <b>Пар нет — можно отдыхать!</b>")
         return "📚 " + header + "\n\n😴 Пар нет — можно отдыхать!"
 
+    if html:
+        out = [
+            "📅 <b>" + esc(header) + "</b>",
+            "👥 <i>" + esc(group_name) + "</i>",
+            "━━━━━━━━━━━━━━━━━━",
+        ]
+        for L in day["lessons"]:
+            if not L.get("subject"):
+                continue
+            emoji, label, subject = _lesson_type(L["subject"])
+            out.append("")
+            out.append("🕘 <code>" + esc(L.get("time") or "—") + "</code>")
+            line = emoji + " <b>" + esc(subject) + "</b>"
+            if L.get("subgroup"):
+                line += "  <i>(" + esc(L["subgroup"]) + ")</i>"
+            out.append(line)
+            details = []
+            if L.get("auditory"):
+                details.append("🚪 " + esc(L["auditory"]))
+            if L.get("teacher"):
+                details.append("👤 " + esc(L["teacher"]))
+            if details:
+                out.append("   " + "  ·  ".join(details))
+        return "\n".join(out)
+
+    # обычный текст (для консоли / --test)
     lines = ["📚 " + header, ""]
     for L in day["lessons"]:
         if not L.get("subject"):
@@ -261,33 +329,58 @@ def format_day(day):
     return "\n".join(lines)
 
 
-def format_week(days):
+def format_week(days, html=False):
     """Компактное расписание на несколько дней."""
     blocks = []
     for d in days:
-        weekday = (d.get("weekday") or "").capitalize()
+        weekday = (d.get("weekday") or "").strip()
         date_text = (d.get("date_text") or "").strip()
-        header = " ".join(x for x in [weekday, date_text] if x).strip() or "Расписание"
+        header = _join_header(weekday, date_text)
+
         if not d.get("lessons"):
-            blocks.append("📚 " + header + "\n😴 Пар нет")
+            if html:
+                blocks.append("📅 <b>" + esc(header) + "</b>\n😴 Пар нет")
+            else:
+                blocks.append("📚 " + header + "\n😴 Пар нет")
             continue
-        blk = ["📚 " + header]
-        for L in d["lessons"]:
-            if not L.get("subject"):
-                continue
-            s = (L.get("time") or "—") + " · " + L["subject"]
-            if L.get("subgroup"):
-                s += " (" + L["subgroup"] + ")"
-            detail = []
-            if L.get("auditory"):
-                detail.append(L["auditory"])
-            if L.get("teacher"):
-                detail.append(L["teacher"])
-            if detail:
-                s += " — " + ", ".join(detail)
-            blk.append("• " + s)
-        blocks.append("\n".join(blk))
-    return "\n\n".join(blocks)
+
+        if html:
+            blk = ["📅 <b>" + esc(header) + "</b>"]
+            for L in d["lessons"]:
+                if not L.get("subject"):
+                    continue
+                emoji, label, subject = _lesson_type(L["subject"])
+                s = "🕘 <code>" + esc(L.get("time") or "—") + "</code> " + emoji + " " + esc(subject)
+                if L.get("subgroup"):
+                    s += " <i>(" + esc(L["subgroup"]) + ")</i>"
+                blk.append(s)
+                det = []
+                if L.get("auditory"):
+                    det.append("🚪 " + esc(L["auditory"]))
+                if L.get("teacher"):
+                    det.append("👤 " + esc(L["teacher"]))
+                if det:
+                    blk.append("    " + "  ·  ".join(det))
+            blocks.append("\n".join(blk))
+        else:
+            blk = ["📚 " + header]
+            for L in d["lessons"]:
+                if not L.get("subject"):
+                    continue
+                s = (L.get("time") or "—") + " · " + L["subject"]
+                if L.get("subgroup"):
+                    s += " (" + L["subgroup"] + ")"
+                detail = []
+                if L.get("auditory"):
+                    detail.append(L["auditory"])
+                if L.get("teacher"):
+                    detail.append(L["teacher"])
+                if detail:
+                    s += " — " + ", ".join(detail)
+                blk.append("• " + s)
+            blocks.append("\n".join(blk))
+    sep = "\n\n━━━━━━━━━━━━━━━━━━\n\n" if html else "\n\n"
+    return sep.join(blocks)
 
 
 def split_text(text, limit=4000):
@@ -396,18 +489,25 @@ def tg_call(method, **params):
         return json.loads(r.read().decode("utf-8"))
 
 
-def send_message(chat_id, text, reply_markup=None):
+def send_message(chat_id, text, reply_markup=None, parse_mode=None):
     params = {"chat_id": chat_id, "text": text}
     if reply_markup is not None:
         params["reply_markup"] = reply_markup
+    if parse_mode:
+        params["parse_mode"] = parse_mode
     tg_call("sendMessage", **params)
 
 
-def send_long(chat_id, text, reply_markup=None):
+def send_long(chat_id, text, reply_markup=None, parse_mode=None):
     """Отправляет текст частями (если он длиннее лимита Telegram)."""
     parts = split_text(text)
     for i, part in enumerate(parts):
-        send_message(chat_id, part, reply_markup if i == len(parts) - 1 else None)
+        send_message(
+            chat_id,
+            part,
+            reply_markup if i == len(parts) - 1 else None,
+            parse_mode=parse_mode,
+        )
 
 
 def answer_cb(cb_id):
@@ -476,7 +576,7 @@ def show_settings(chat_id):
 def send_day(chat_id, date_obj, group=None):
     group = group or get_user_settings(chat_id).get("group", GROUP)
     day = fetch_day_schedule(date_obj, group)
-    send_long(chat_id, format_day(day) if day else "Не удалось получить расписание.", main_keyboard())
+    send_long(chat_id, format_day(day, html=True) if day else "Не удалось получить расписание.", main_keyboard(), parse_mode="HTML")
 
 
 def send_week(chat_id, group=None):
@@ -485,7 +585,7 @@ def send_week(chat_id, group=None):
     if not days:
         send_message(chat_id, "Не удалось получить расписание.", main_keyboard())
         return
-    send_long(chat_id, format_week(days), main_keyboard())
+    send_long(chat_id, format_week(days, html=True), main_keyboard(), parse_mode="HTML")
 
 
 # ------------------------- ОБРАБОТКА СОБЫТИЙ -------------------------
@@ -586,7 +686,7 @@ def search_and_reply(chat_id, query):
         if exact or (len(matches) == 1):
             group = exact or matches[0]
             day = fetch_day_schedule(now_msk().date(), group)
-            send_long(chat_id, format_day(day) if day else "Не удалось получить расписание для группы " + group, main_keyboard())
+            send_long(chat_id, format_day(day, html=True) if day else "Не удалось получить расписание для группы " + group, main_keyboard(), parse_mode="HTML")
         elif len(matches) > 1:
             top = "\n".join("• " + g for g in matches[:15])
             send_message(chat_id, "Найдено несколько групп:\n" + top + "\n\nУточни номер (например: " + matches[0] + ")")
@@ -612,7 +712,7 @@ def scheduler_loop():
                     if entry.get("auto_send", True):
                         try:
                             day = fetch_day_schedule(now.date(), entry.get("group", GROUP))
-                            send_message(int(key), format_day(day) if day else "Не удалось получить расписание.")
+                            send_message(int(key), format_day(day, html=True) if day else "Не удалось получить расписание.", parse_mode="HTML")
                             print("[bot] расписание отправлено", key, now.strftime("%Y-%m-%d %H:%M"))
                         except Exception as e:
                             print("[bot] ошибка отправки", key, ":", e)
@@ -630,8 +730,8 @@ def send_today_once():
         print("[bot] ОШИБКА: chat_id не задан. Укажите CHAT_ID в vgltu_bot.py.")
         sys.exit(1)
     day = fetch_day_schedule(now_msk().date(), GROUP)
-    text = format_day(day) if day else "Не удалось получить расписание."
-    send_message(chat_id, text)
+    text = format_day(day, html=True) if day else "Не удалось получить расписание."
+    send_message(chat_id, text, parse_mode="HTML")
     print("[bot] расписание отправлено (--once) на chat_id", chat_id)
 
 
