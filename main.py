@@ -50,7 +50,17 @@ _socket.getaddrinfo = _ipv4_getaddrinfo
 
 # ----------------------------- НАСТРОЙКИ -----------------------------
 
-TOKEN = os.environ.get("BOT_TOKEN", "9255264310:AAEFEh0QvctBAAWwMRGinjFxWSwSHXxwhsM")   # токен от @BotFather (или из env BOT_TOKEN)
+def _get_token():
+    """Токен берётся ТОЛЬКО из переменных окружения сервера (не хранится в коде)."""
+    for name in ("BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_TOKEN", "API_TOKEN", "TOKEN"):
+        v = os.environ.get(name)
+        if v and v.strip():
+            return v.strip()
+    return None
+
+
+TOKEN = _get_token()
+
 GROUP = "ИС2-252-ОБ"                                      # группа по умолчанию
 SEND_HOUR = 7                                             # час авторассылки (МСК)
 SEND_MINUTE = 0                                           # минута авторассылки
@@ -475,10 +485,12 @@ def set_user_auto_send(chat_id, value):
 
 # ----------------------------- TELEGRAM ------------------------------
 
-API = "https://api.telegram.org/bot" + TOKEN
+API = "https://api.telegram.org/bot" + (TOKEN or "")
 
 
 def tg_call(method, **params):
+    if not TOKEN:
+        raise RuntimeError("Токен не задан. Добавьте переменную окружения BOT_TOKEN на сервере.")
     data = json.dumps(params).encode("utf-8")
     req = urllib.request.Request(
         API + "/" + method,
@@ -725,6 +737,9 @@ def scheduler_loop():
 # ------------------------------ MAIN --------------------------------
 
 def send_today_once():
+    if not TOKEN:
+        print("[bot] ОШИБКА: токен не задан. Добавьте переменную окружения BOT_TOKEN на сервере.")
+        sys.exit(1)
     chat_id = CHAT_ID or load_chat_id()
     if not chat_id:
         print("[bot] ОШИБКА: chat_id не задан. Укажите CHAT_ID в vgltu_bot.py.")
@@ -745,6 +760,10 @@ def load_chat_id():
 
 
 def run_bot():
+    if not TOKEN:
+        print("[bot] ОШИБКА: токен не задан. Добавьте переменную окружения BOT_TOKEN на сервере "
+              "(или в панели хостинга в поле «Bot Token»).")
+        sys.exit(1)
     setup_proxy()
     print("[bot] старт. Группа по умолчанию:", GROUP, "| авторассылка в %02d:%02d МСК" % (SEND_HOUR, SEND_MINUTE))
 
