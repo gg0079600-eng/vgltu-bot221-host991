@@ -561,6 +561,9 @@ screen = {}          # chat_id -> main | settings | subgroup | days
 day_week = {}        # chat_id -> понедельник выбранной недели
 awaiting_group = {}  # chat_id -> True, если ждём ввод названия группы
 
+# Кто может делать рассылку всем пользователям (твой chat_id)
+ADMIN_IDS = {CHAT_ID} if CHAT_ID else set()
+
 
 def _monday_of(date_obj):
     return date_obj - datetime.timedelta(days=date_obj.weekday())
@@ -670,6 +673,29 @@ def search_and_reply(chat_id, query):
         send_message(chat_id, "Ошибка при получении расписания: " + str(e), MAIN_KB)
 
 
+def broadcast_all(chat_id, text):
+    """Рассылает сообщение всем пользователям бота (только для админа)."""
+    settings = load_settings()
+    if CHAT_ID and str(CHAT_ID) not in settings:
+        settings[str(CHAT_ID)] = _default_entry()
+    recipients = [int(k) for k in settings.keys()]
+    ok = fail = 0
+    for r in recipients:
+        try:
+            send_message(r, text, MAIN_KB)
+            ok += 1
+        except Exception as e:
+            fail += 1
+            print("[bot] broadcast fail", r, ":", e)
+        time.sleep(0.05)  # не превышаем лимиты Telegram (~30 сообщений/сек)
+    send_message(chat_id,
+                 "📢 Рассылка завершена.\n"
+                 "Всего пользователей: " + str(len(recipients)) + "\n"
+                 "✅ Доставлено: " + str(ok) + "\n"
+                 "❌ Ошибок: " + str(fail),
+                 MAIN_KB)
+
+
 def handle_text(chat_id, text):
     ensure_user(chat_id)
 
@@ -703,6 +729,22 @@ def handle_text(chat_id, text):
             search_and_reply(chat_id, q)
         else:
             send_message(chat_id, "Введи номер группы: /find ИС2-253-ОБ", MAIN_KB)
+        return
+    if text.startswith("/broadcast"):
+        if chat_id not in ADMIN_IDS:
+            send_message(chat_id, "Команда доступна только администратору.", MAIN_KB)
+            return
+        msg = text[len("/broadcast"):].strip()
+        if not msg:
+            send_message(chat_id, "Напиши текст так:\n/broadcast Вышло обновление бота!", MAIN_KB)
+            return
+        broadcast_all(chat_id, msg)
+        return
+    if text == "/users":
+        if chat_id not in ADMIN_IDS:
+            send_message(chat_id, "Команда доступна только администратору.", MAIN_KB)
+            return
+        send_message(chat_id, "👥 Пользователей в базе: " + str(len(load_settings())), MAIN_KB)
         return
 
     scr = screen.get(chat_id, "main")
@@ -903,5 +945,16 @@ if __name__ == "__main__":
     elif "--once" in sys.argv:
         setup_proxy()
         send_today_once()
+    elif "--broadcast" in sys.argv:
+        setup_proxy()
+        idx = sys.argv.index("--broadcast")
+        msg = " ".join(sys.argv[idx + 1:]).strip()
+        if not TOKEN:
+            print("[bot] ОШИБКА: токен не задан (BOT_TOKEN).")
+            sys.exit(1)
+        if not msg:
+            print('Укажи текст: python main.py --broadcast "Вышло обновление!"')
+            sys.exit(1)
+        broadcast_all(CHAT_ID, msg)
     else:
         run_bot()
