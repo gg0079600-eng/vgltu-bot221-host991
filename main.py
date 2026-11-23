@@ -10,10 +10,12 @@ Telegram-бот расписания ВГЛТУ.
   5. В расписании явно указан тип занятия: Лекция / Практика / Лабораторная.
 
 Команды: /start, /now, /tomorrow, /week, /find <группа>, /settings, /help
+Админ: /users, /broadcast <текст>
 
 Запуск:  python main.py
-Тест:    python main.py --test    (расписание группы GROUP на сегодня)
-Разово:  python main.py --once    (отправить сегодняшнее расписание и выйти)
+Тест:    python main.py --test
+Разово:  python main.py --once
+Рассылка из консоли: python main.py --broadcast "текст"
 """
 
 import json
@@ -699,14 +701,12 @@ def broadcast_all(chat_id, text):
 def handle_text(chat_id, text):
     ensure_user(chat_id)
 
-    # первый вход — опрос подгруппы
-    if not is_subgroup_chosen(chat_id) and text not in ("1 подгруппа", "2 подгруппа", "Все подгруппы"):
-        show_subgroup(chat_id, "👋 Привет! Я бот расписания ВГЛТУ.\nУкажи, в какой ты подгруппе:")
-        return
-
-    # команды
+    # ===== КОМАНДЫ — обрабатываются ВСЕГДА, до любых проверок =====
     if text == "/start":
-        show_main(chat_id, "Привет! Твой chat_id: " + str(chat_id) + "\n\n" + HELP_TEXT)
+        if not is_subgroup_chosen(chat_id):
+            show_subgroup(chat_id, "👋 Привет! Я бот расписания ВГЛТУ.\nУкажи, в какой ты подгруппе:")
+        else:
+            show_main(chat_id, "Привет! Твой chat_id: " + str(chat_id) + "\n\n" + HELP_TEXT)
         return
     if text == "/help":
         show_main(chat_id, HELP_TEXT)
@@ -731,6 +731,7 @@ def handle_text(chat_id, text):
             send_message(chat_id, "Введи номер группы: /find ИС2-253-ОБ", MAIN_KB)
         return
     if text.startswith("/broadcast"):
+        print("[bot] команда /broadcast от", chat_id, "| текст:", text)
         if chat_id not in ADMIN_IDS:
             send_message(chat_id, "Команда доступна только администратору.", MAIN_KB)
             return
@@ -745,6 +746,11 @@ def handle_text(chat_id, text):
             send_message(chat_id, "Команда доступна только администратору.", MAIN_KB)
             return
         send_message(chat_id, "👥 Пользователей в базе: " + str(len(load_settings())), MAIN_KB)
+        return
+
+    # ===== первый вход — опрос подгруппы =====
+    if not is_subgroup_chosen(chat_id) and text not in ("1 подгруппа", "2 подгруппа", "Все подгруппы"):
+        show_subgroup(chat_id, "👋 Привет! Я бот расписания ВГЛТУ.\nУкажи, в какой ты подгруппе:")
         return
 
     scr = screen.get(chat_id, "main")
